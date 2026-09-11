@@ -1,0 +1,72 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USERNAME:?DB_USERNAME is required}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      POSTGRES_DB: ${DB_DATABASE:?DB_DATABASE is required}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${DB_USERNAME:-gateway}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Provisioned for the rate limiter / cache in a multi-instance deployment.
+  # The prototype's RateLimitGuard defaults to in-memory and doesn't require
+  # this yet - see backend README notes on scaling the rate limiter.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USERNAME: ${DB_USERNAME:?DB_USERNAME is required}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      DB_DATABASE: ${DB_DATABASE:?DB_DATABASE is required}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is required}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET is required}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-7d}
+      AUDIT_HASH_SECRET: ${AUDIT_HASH_SECRET:?AUDIT_HASH_SECRET is required}
+      REDIS_URL: redis://redis:6379
+      CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS is required}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+      RATE_LIMIT_MAX_REQUESTS: ${RATE_LIMIT_MAX_REQUESTS:-20}
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      POLICY_BLOCKED_CATEGORIES: ${POLICY_BLOCKED_CATEGORIES:-weapons,malware,csam,extremism}
+    ports:
+      - '3000:3000'
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:3000}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - '5173:5173'
+
+volumes:
+  pgdata:
